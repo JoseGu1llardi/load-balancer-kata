@@ -29,7 +29,7 @@ public class LoadBalancer {
 
     public String get() {
         if (instances.isEmpty()) {
-            throw new IllegalStateException("No instances registered");
+            throw new IllegalStateException("No instances registered.");
         }
         int index = random.nextInt(instances.size());
         return instances.get(index);
