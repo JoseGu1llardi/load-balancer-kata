@@ -5,14 +5,14 @@ public class LoadBalancer {
 
     private final List<String> instances = new ArrayList<>();
 
-    private final Random random;
+    private final SelectionStrategy strategy;
 
     public LoadBalancer() {
-        this(new Random());       // normal use: a real random generator
+        this(new RandomStrategy());
     }
 
-    LoadBalancer(Random random) {
-        this.random = random;     // tests: we choose the generator
+    public LoadBalancer(SelectionStrategy selectionStrategy) {
+        this.strategy = Objects.requireNonNull(selectionStrategy, "Strategy cannot be null.");
     }
 
     public void register(String address) {
@@ -31,8 +31,7 @@ public class LoadBalancer {
         if (instances.isEmpty()) {
             throw new IllegalStateException("No instances registered.");
         }
-        int index = random.nextInt(instances.size());
-        return instances.get(index);
+        return strategy.select(Collections.unmodifiableList(instances));
     }
 
     public List<String> getInstances() {

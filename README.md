@@ -1,6 +1,6 @@
 # Load Balancer Kata
 
-A simple load balancer in Java, built step by step with TDD during a live-coding interview. It keeps a registry of backend instances and returns one of them at random on each call.
+A simple load balancer in Java, built step by step with TDD during a live-coding interview. It keeps a registry of backend instances and returns one of them on each call, using a selection strategy chosen at creation: random (the default) or round-robin.
 
 ## Requirements
 
@@ -24,17 +24,41 @@ String instance = balancer.get();             // e.g. "http://10.0.0.2:8080"
 List<String> all = balancer.getInstances();   // immutable copy
 ```
 
+With round-robin selection:
+
+```java
+LoadBalancer balancer = new LoadBalancer(new RoundRobinStrategy());
+
+balancer.register("http://10.0.0.1:8080");
+balancer.register("http://10.0.0.2:8080");
+
+balancer.get();   // "http://10.0.0.1:8080"
+balancer.get();   // "http://10.0.0.2:8080"
+balancer.get();   // "http://10.0.0.1:8080"
+```
+
 ## API
+
+### `LoadBalancer`
 
 | Method | Description | Throws |
 |---|---|---|
-| `LoadBalancer()` | Creates a load balancer backed by a real `Random`. | — |
-| `LoadBalancer(Random random)` | *Package-private.* Lets tests inject the random generator. | — |
+| `LoadBalancer()` | Creates a load balancer with the `RandomStrategy`. | — |
+| `LoadBalancer(SelectionStrategy strategy)` | Creates a load balancer with the given strategy. | `NullPointerException` if the strategy is `null` |
 | `void register(String address)` | Registers a backend instance. | `IllegalArgumentException` if the address is `null` or blank; `IllegalStateException` if it is already registered or the limit of 10 is reached |
-| `String get()` | Returns one of the registered instances, chosen at random. | `IllegalStateException` if no instances are registered |
+| `String get()` | Returns one of the registered instances, chosen by the strategy. | `IllegalStateException` if no instances are registered |
 | `List<String> getInstances()` | Returns an immutable copy of the registered instances. | — |
 
 **Exception rule:** `IllegalArgumentException` when the argument itself is the problem; `IllegalStateException` when the argument is valid but the object's state doesn't allow the operation.
+
+### Strategies
+
+| Type | Description |
+|---|---|
+| `SelectionStrategy` | Interface with a single method, `String select(List<String> instances)`. `LoadBalancer` only calls it with a non-empty, unmodifiable list. |
+| `RandomStrategy()` | Picks a random index with a real `Random`. |
+| `RandomStrategy(Random random)` | *Package-private.* Lets tests inject the random generator. |
+| `RoundRobinStrategy()` | Returns the instances in order and starts again from the first one after the last. |
 
 ---
 
@@ -126,9 +150,73 @@ List<String> all = balancer.getInstances();   // immutable copy
 
 ---
 
+## Step 3: Round-robin selection
+
+> Some of our clients want a different strategy. Add support for round-robin selection: instead of choosing at random, `get()` should return the instances in order, one after the other, and start again from the first one after the last.
+>
+> For example, with instances A, B and C, calls to `get()` should return A, B, C, A, B, C, and so on.
+>
+> The random strategy must keep working: it should be possible to create a load balancer with either strategy.
+
+### Clarifications from the interviewer
+
+1. **Can the strategy change after creation?** No. The strategy is chosen when the load balancer is created, and there's no need to change it later.
+2. **What if no strategy is given?** Use random as the default. Existing clients that create a load balancer without a strategy should keep working exactly as before.
+3. **What happens to the rotation when an instance is registered?** Keep it simple: the new instance joins the rotation at the end, and the sequence continues from where it was. With A, B and C, after returning A and B, if D is registered, the next calls return C, D, A, B, and so on.
+
+### Tests
+
+| # | Test | Where it came from |
+|---|---|---|
+| 1 | `returnsInstancesInOrder` | `RoundRobinStrategy`, calling `select`. The example: A, B, C |
+| 2 | `startsAgainFromTheFirstAfterTheLast` | `RoundRobinStrategy`. The example: after C, back to A |
+| 3 | `withOneInstanceAlwaysReturnsIt` | `RoundRobinStrategy`. Checklist: edge case |
+| 4 | `newInstanceJoinsTheRotationAtTheEnd` | `LoadBalancer`, calling `register` and `get`. Clarification 3: C, D, A, B |
+| 5 | `creatingWithNullStrategyThrows` | `LoadBalancer`. Invalid input at creation |
+| 6 | `strategyCannotModifyTheInstances` | `LoadBalancer`. Encapsulation: a strategy can't bypass the registration rules |
+
+Clarification 2 is covered by the existing tests: every Step 1 and Step 2 test still uses `new LoadBalancer()` and passes unchanged.
+
+### Design decisions
+
+- **Strategy pattern:** `LoadBalancer` keeps the registry and its rules, and delegates only the choice to a `SelectionStrategy`. Adding a strategy doesn't touch `LoadBalancer`.
+- **Chosen in the constructor, stored in a `final` field:** this follows clarification 1. There is no setter.
+- **Default constructor delegates:** `LoadBalancer()` calls `this(new RandomStrategy())`, so existing clients get the same behaviour as before (clarification 2).
+- **The randomness moved into `RandomStrategy`:** the package-private constructor that accepts a `Random` moved with it, so the Step 2 Mockito test now builds `new LoadBalancer(new RandomStrategy(random))`.
+- **Strategies are tested on their own:** `RoundRobinStrategyTest` calls `select` directly with a fixed list. Only the behaviour that depends on `register` (clarification 3) is tested through `LoadBalancer`.
+- **Clarification 3 for free:** instances are kept in insertion order in an `ArrayList`, and `RoundRobinStrategy` only keeps the index of the next one, so a new instance lands at the end of the rotation.
+- **Fail fast on `null`:** `Objects.requireNonNull` in the constructor, instead of a `NullPointerException` on the first `get()`.
+- **The strategy gets a read-only view:** `get()` passes `Collections.unmodifiableList(instances)`. A strategy can't clear or add to the registry, and there's no copy on every request.
+- **`SelectionStrategy` is a single-method interface:** a test can pass a lambda, as `strategyCannotModifyTheInstances` does.
+
+### Mistakes and fixes
+
+| Mistake | Why it's a problem | Fix |
+|---|---|---|
+| One clarifying question asked in Portuguese | In the interview, everything is in English | *"What should the default strategy be if no strategy is provided?"* |
+| Clarifying questions copied from the suggested directions | In the interview, nobody gives you a list | Read the requirement, look for what it doesn't say, and write your own questions |
+| `LoadBalancer(SelectionStrategy)` constructor was package-private | The requirement says clients must be able to choose the strategy, so it's part of the public API | Make the constructor `public` |
+| Passed the internal mutable list to the strategy | A badly written strategy could clear or change the instances, bypassing the limit and duplicate rules | `strategy.select(Collections.unmodifiableList(instances))`: a read-only view, O(1), no copy |
+| Default constructor built `new RandomStrategy(new Random())` | Duplicates a decision `RandomStrategy` already makes | `new RandomStrategy()`: each class builds its own dependencies |
+| No protection against a `null` strategy | The error would only appear on the first `get()`, far from the real cause | `Objects.requireNonNull(strategy, "Strategy cannot be null.")` |
+| Added `requireNonNull` without a test | Untested behaviour can be removed without anyone noticing | `assertThrows(NullPointerException.class, () -> new LoadBalancer(null))` |
+| Test list checked the internal index (`...HasIndexZero`, `...IncreasesCurrentIndex`) | Internal details are invisible to callers, and the tests break if the implementation changes | Ask "what does this cause, seen from outside?": the first call returns the first instance; calls return instances in order |
+| Vague test (`selectedInstanceIsReturned`) | A test needs a concrete expectation | Name and assert the exact expected instance |
+| Didn't know where else to find test cases | Missed cases that were written in the requirement itself | Turn every example and every interviewer answer into a test (A, B, C, A; and C, D, A, B) |
+| `currentIndex` field without `private` | Other classes in the package could change the rotation | Make the field `private` (and drop the redundant `= 0`) |
+| Wrap-around (`%`) implemented in the first cycle | Implemented ahead of the test, so the next test passed on the first run | Write only what the current test needs; break the code on purpose to confirm the test can fail |
+| Index stored already limited to the old list size | Works when the list grows, but could go out of bounds if the list ever shrinks | Keep an ever-increasing counter and compute `counter % size` at selection time (for the future) |
+| Called one test method from another (`returnsInstancesInOrder()`) | One bug causes two failures, tests become coupled, and each test no longer reads on its own | Reuse scenarios through a `private` helper without assertions (`completeOneRound()`) |
+| Mixed hard-coded strings and `instances.get(...)` as expected values | Inconsistent style, and tests break silently if the setup data changes | Use the test's own list as the single source of expected values |
+| Loop `i = 0; i <= 100` | Runs 101 times, not 100 | Standard "repeat N times": `for (int i = 0; i < N; i++)` |
+| 100 calls to test a deterministic behaviour | Many calls only add confidence for random behaviour | Two or three calls prove deterministic behaviour |
+| Variable named `newInstances` for a one-element list | Doesn't express the intent of the test | `singleInstance` |
+
+---
+
 ## Test results
 
-11 test methods (7 from Step 1, 4 from Step 2). Maven reports **13 tests, all passing**, because `registeringInvalidAddressThrows` runs once for each of `null`, `""` and `"   "`.
+17 test methods: 14 in `LoadBalancerTest` (7 from Step 1, 4 from Step 2, 3 from Step 3) and 3 in `RoundRobinStrategyTest`. Maven reports **19 tests, all passing**, because `registeringInvalidAddressThrows` runs once for each of `null`, `""` and `"   "`.
 
 ## Project structure
 
@@ -136,13 +224,21 @@ List<String> all = balancer.getInstances();   // immutable copy
 .
 ├── pom.xml
 └── src
-    ├── main/java/LoadBalancer.java
-    └── test/java/LoadBalancerTest.java
+    ├── main/java
+    │   ├── LoadBalancer.java
+    │   ├── SelectionStrategy.java
+    │   ├── RandomStrategy.java
+    │   └── RoundRobinStrategy.java
+    └── test/java
+        ├── LoadBalancerTest.java
+        └── RoundRobinStrategyTest.java
 ```
 
 ## Known limitations
 
-- **Not thread-safe:** `register()` is check-then-act (`contains`/`size` followed by `add`) on a plain `ArrayList`, so two threads can both pass the checks and break the rules. A fix would be `synchronized` or an atomic operation on a concurrent structure.
+- **Not thread-safe:** `register()` is check-then-act (`contains`/`size` followed by `add`) on a plain `ArrayList`, so two threads can both pass the checks and break the rules. `RoundRobinStrategy` has the same problem: `currentIndex` is a plain `int`, so concurrent calls can return the same instance twice. A fix would be `synchronized`, or an `AtomicInteger` for the index.
+- **`RoundRobinStrategy` keeps state:** each load balancer needs its own instance. Sharing one between two load balancers mixes their rotations.
+- **Round-robin assumes the list never shrinks:** if removal of instances were added, `currentIndex` could point past the end of the list and `select` would throw `IndexOutOfBoundsException`. The fix is an ever-increasing counter, with `counter % size` computed at selection time.
 - No removal of instances and no health checks. These weren't requested.
 - Addresses aren't validated as URLs; any non-blank string is accepted.
 - The class is in the default package.

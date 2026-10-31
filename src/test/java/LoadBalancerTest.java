@@ -117,11 +117,55 @@ public class LoadBalancerTest {
         Random random = mock(Random.class);
         when(random.nextInt(3)).thenReturn(1); // the random index will be 1
 
-        LoadBalancer loadBalancer = new LoadBalancer(random);
+        LoadBalancer loadBalancer = new LoadBalancer(new RandomStrategy(random));
         loadBalancer.register("http://10.0.0.1:8080");
         loadBalancer.register("http://10.0.0.2:8080");
         loadBalancer.register("http://10.0.0.3:8080");
 
         assertEquals("http://10.0.0.2:8080", loadBalancer.get());
+    }
+
+    @Test
+    void newInstanceJoinsTheRotationAtTheEnd() {
+        LoadBalancer loadBalancer = new LoadBalancer(new RoundRobinStrategy());
+
+        loadBalancer.register("http://10.0.0.1:8080");
+        loadBalancer.register("http://10.0.0.2:8080");
+        loadBalancer.register("http://10.0.0.3:8080");
+
+        loadBalancer.get();
+        loadBalancer.get();
+
+        loadBalancer.register("http://10.0.0.4:8080");
+
+        List<String> expectedReturnedInstances = List.of(
+                "http://10.0.0.3:8080",
+                "http://10.0.0.4:8080",
+                "http://10.0.0.1:8080",
+                "http://10.0.0.2:8080"
+        );
+
+        assertEquals(expectedReturnedInstances, List.of(
+                loadBalancer.get(),
+                loadBalancer.get(),
+                loadBalancer.get(),
+                loadBalancer.get()
+        ));
+    }
+
+    @Test
+    void creatingWithNullStrategyThrows() {
+        assertThrows(NullPointerException.class, () -> new LoadBalancer(null));
+    }
+
+    @Test
+    void strategyCannotModifyTheInstances() {
+        LoadBalancer loadBalancer = new LoadBalancer(instances -> {
+            instances.clear();
+            return "http://10.0.0.1:8080";
+        });
+        loadBalancer.register("http://10.0.0.1:8080");
+
+        assertThrows(UnsupportedOperationException.class, loadBalancer::get);
     }
 }
