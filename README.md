@@ -214,9 +214,37 @@ Clarification 2 is covered by the existing tests: every Step 1 and Step 2 test s
 
 ---
 
+## Extra: Thread safety
+
+Not an interview step: a follow-up to learn about threads, starting from the "not thread-safe" limitation.
+
+### The problem
+
+- **`register()` is check-then-act:** two threads can both see `size() == 9`, both pass the check and both add, ending with 11 instances. The same race can let a duplicate in.
+- **`RoundRobinStrategy` did read-then-write on a plain `int`:** two threads can read the same `currentIndex` and return the same instance, so some instances get more requests than others.
+
+### The fix
+
+- **`synchronized` on `register()`, `get()` and `getInstances()`:** only one thread at a time touches `instances`, so the checks and the `add` happen as one step. `getInstances()` needs it too: without a lock, a thread reading the list isn't guaranteed to see another thread's latest `add`.
+- **`AtomicInteger` in `RoundRobinStrategy`:** `getAndIncrement()` reads and increments in one atomic operation, so each call gets its own number. The strategy is thread-safe on its own, not only when called through `LoadBalancer`.
+- **An ever-increasing counter, reduced at selection time:** `Math.floorMod(counter.getAndIncrement(), instances.size())`. The index is computed against the current size, so it can't go past the end of the list. `floorMod` instead of `%` keeps the index non-negative after the counter overflows past `Integer.MAX_VALUE`.
+
+### Tests
+
+| # | Test | What it checks |
+|---|---|---|
+| 1 | `concurrentRegistrationsNeverExceedTheLimit` (`@RepeatedTest(100)`) | 50 threads register different addresses at the same time; exactly 10 end up registered |
+| 2 | `concurrentSelectsAreEvenlyDistributed` (`@RepeatedTest(20)`) | 30 threads call `select` 100 times each on 3 instances; each instance is returned exactly 1000 times |
+
+- **A `CountDownLatch` as a starting gun:** every thread waits on `start.await()`, and `start.countDown()` releases them together, which makes collisions more likely.
+- **Closing the executor waits for the threads:** `ExecutorService` is `AutoCloseable` since Java 19, and `close()` waits for every submitted task. The assertions run after the `try`, so they see every thread's result.
+- **Repeated, because races are non-deterministic:** a single run can pass by luck. With the fixes removed, the round-robin test failed 18 of its 20 repetitions, but the registration test failed only 2 of 100: a green run doesn't prove `register()` is safe, it only makes a bug unlikely to go unnoticed.
+
+---
+
 ## Test results
 
-17 test methods: 14 in `LoadBalancerTest` (7 from Step 1, 4 from Step 2, 3 from Step 3) and 3 in `RoundRobinStrategyTest`. Maven reports **19 tests, all passing**, because `registeringInvalidAddressThrows` runs once for each of `null`, `""` and `"   "`.
+19 test methods: 15 in `LoadBalancerTest` (7 from Step 1, 4 from Step 2, 3 from Step 3, 1 on thread safety) and 4 in `RoundRobinStrategyTest` (3 from Step 3, 1 on thread safety). Maven reports **139 tests, all passing**, because `registeringInvalidAddressThrows` runs once for each of `null`, `""` and `"   "`, and the two concurrency tests are repeated 100 and 20 times.
 
 ## Project structure
 
@@ -236,9 +264,9 @@ Clarification 2 is covered by the existing tests: every Step 1 and Step 2 test s
 
 ## Known limitations
 
-- **Not thread-safe:** `register()` is check-then-act (`contains`/`size` followed by `add`) on a plain `ArrayList`, so two threads can both pass the checks and break the rules. `RoundRobinStrategy` has the same problem: `currentIndex` is a plain `int`, so concurrent calls can return the same instance twice. A fix would be `synchronized`, or an `AtomicInteger` for the index.
+- **One lock for everything:** `synchronized` methods serialize every `get()`, even though reads are far more frequent than registrations. Under heavy load, a `ReadWriteLock` or a copy-on-write list would let reads run in parallel.
 - **`RoundRobinStrategy` keeps state:** each load balancer needs its own instance. Sharing one between two load balancers mixes their rotations.
-- **Round-robin assumes the list never shrinks:** if removal of instances were added, `currentIndex` could point past the end of the list and `select` would throw `IndexOutOfBoundsException`. The fix is an ever-increasing counter, with `counter % size` computed at selection time.
+- **One uneven step on overflow:** after about 4 billion calls the counter wraps around, and unless the number of instances is a power of two, the rotation skips or repeats once.
 - No removal of instances and no health checks. These weren't requested.
 - Addresses aren't validated as URLs; any non-blank string is accepted.
 - The class is in the default package.

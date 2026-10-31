@@ -15,7 +15,7 @@ public class LoadBalancer {
         this.strategy = Objects.requireNonNull(selectionStrategy, "Strategy cannot be null.");
     }
 
-    public void register(String address) {
+    public synchronized void register(String address) {
         validateAddress(address);
 
         if (instances.size() >= MAX_INSTANCE_CAPACITY) {
@@ -27,14 +27,14 @@ public class LoadBalancer {
         instances.add(address);
     }
 
-    public String get() {
+    public synchronized String get() {
         if (instances.isEmpty()) {
             throw new IllegalStateException("No instances registered.");
         }
         return strategy.select(Collections.unmodifiableList(instances));
     }
 
-    public List<String> getInstances() {
+    public synchronized List<String> getInstances() {
         return List.copyOf(instances);
     }
 

@@ -1,14 +1,12 @@
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class RoundRobinStrategy implements SelectionStrategy {
-    private int currentIndex;
+    private final AtomicInteger counter = new AtomicInteger();
 
     @Override
     public String select(List<String> instances) {
-        String instance = instances.get(currentIndex);
-
-        currentIndex = (currentIndex + 1) % instances.size();
-
-        return instance;
+        int index = Math.floorMod(counter.getAndIncrement(), instances.size());
+        return instances.get(index);
     }
 }

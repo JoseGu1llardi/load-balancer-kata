@@ -1,4 +1,5 @@
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullSource;
@@ -6,6 +7,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -167,5 +171,28 @@ public class LoadBalancerTest {
         loadBalancer.register("http://10.0.0.1:8080");
 
         assertThrows(UnsupportedOperationException.class, loadBalancer::get);
+    }
+
+    @RepeatedTest(100)
+    void concurrentRegistrationsNeverExceedTheLimit() throws InterruptedException {
+        int threadCount = 50;
+        CountDownLatch start = new CountDownLatch(1);
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(threadCount)) {
+            for (int i = 0; i < threadCount; i++) {
+                String address = "http://10.0.1." + i + ":8080";
+                executor.submit(() -> {
+                    try {
+                        start.await();
+                        balancer.register(address);
+                    } catch (InterruptedException | IllegalStateException ignored) {
+                        // IllegalStateException is expected once the limit is reached
+                    }
+                });
+            }
+            start.countDown();
+        } // closing the executor waits for every thread to finish
+
+        assertEquals(REQUIRED_LIMIT, balancer.getInstances().size());
     }
 }
